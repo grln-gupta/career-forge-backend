@@ -75,13 +75,16 @@ async def optimize_text(request: OptimizeRequest):
         TASK: Rewrite the user's rough bullet point for a '{request.role}' resume.
         
         RULES:
-        1. Use the STAR Method (Situation, Task, Action, Result).
-        2. Start with a strong Power Verb (e.g., Engineered, Spearheaded, Optimized).
-        3. Quantify results with numbers/percentages where possible (e.g., "improved efficiency by 20%").
-        4. Remove fluff and make it concise (1-2 sentences max).
-        5. Output ONLY the rewritten bullet point. No intro.
+        1. Analyze the input text below.
+        2. If the input contains multiple different achievements or tasks, maintain them as separate bullet points.
+        3. DO NOT summarize the entire text into one sentence. 
+        4. Rewrite each distinct point to use the STAR method (Situation, Task, Action, Result).
+        5. Use strong action verbs (Architected, Engineered, Spearheaded).
+        6. Quantify results where possible (e.g., "reduced latency by 40%").
 
         INPUT: "{request.text}"
+        OUTPUT FORMAT:
+        Return ONLY the rewritten bullet points. Do not add introductory text.
         """
 
     # 2. LINKEDIN MODE (Viral/Professional)
