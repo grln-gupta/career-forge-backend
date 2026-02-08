@@ -1,21 +1,13 @@
-import os
-import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from fastapi.middleware.cors import CORSMiddleware
+import os
 import google.generativeai as genai
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
-# 1. Setup API Key
-API_KEY = os.getenv("GEMINI_API_KEY")
-
-# Configure Gemini if key exists
-if API_KEY:
-    genai.configure(api_key=API_KEY)
-
-# 2. Setup the App
 app = FastAPI()
 
-# 3. Allow Frontend to talk to Backend (CORS)
+# 1. Enable CORS (Allows Angular to talk to Python)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,75 +16,123 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 4. Define the Data Model
-class OptimizationRequest(BaseModel):
+# --- SMART MODEL SETUP (Fixes the 404 Crash) ---
+API_KEY = os.getenv("GEMINI_API_KEY")
+active_model = None
+
+def configure_genai():
+    global active_model
+    if not API_KEY:
+        print("❌ CRITICAL: GEMINI_API_KEY is missing!")
+        return
+
+    try:
+        genai.configure(api_key=API_KEY)
+        print("🔍 Searching for available Gemini models...")
+        
+        # List what models your API key can actually see
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        print(f"📋 Found models: {available_models}")
+
+        # Smart Selection: Prefer Flash (Fast), then Pro, then whatever works
+        model_name = "models/gemini-1.5-flash" # Default wish
+        
+        if "models/gemini-1.5-flash" in available_models:
+            model_name = "models/gemini-1.5-flash"
+        elif "models/gemini-pro" in available_models:
+            model_name = "models/gemini-pro"
+        elif available_models:
+            model_name = available_models[0] # Fallback to first available
+        
+        print(f"✅ ACTIVATED MODEL: {model_name}")
+        active_model = genai.GenerativeModel(model_name)
+
+    except Exception as e:
+        print(f"⚠️ Configuration Error: {e}")
+
+# Run setup immediately
+configure_genai()
+
+# --- DATA MODELS ---
+class OptimizeRequest(BaseModel):
     text: str
     mode: str
     role: str
 
-# 5. The Logic
+# --- THE MISSING INSTRUCTIONS (RESTORED) ---
 @app.post("/optimize")
-async def optimize_text(request: OptimizationRequest):
-    if not API_KEY:
-        raise HTTPException(status_code=500, detail="Server Error: GEMINI_API_KEY not found in environment variables.")
+async def optimize_text(request: OptimizeRequest):
+    # If model crashed, try to restart it
+    if not active_model:
+        configure_genai()
+        if not active_model:
+            raise HTTPException(status_code=500, detail="AI Model unavailable. Check Server Logs.")
+
+    # 1. RESUME MODE (STAR Method)
+    if request.mode == "resume":
+        prompt = f"""
+        Act as an Expert Resume Writer and ATS Specialist.
+        TASK: Rewrite the user's rough bullet point for a '{request.role}' resume.
+        
+        RULES:
+        1. Use the STAR Method (Situation, Task, Action, Result).
+        2. Start with a strong Power Verb (e.g., Engineered, Spearheaded, Optimized).
+        3. Quantify results with numbers/percentages where possible (e.g., "improved efficiency by 20%").
+        4. Remove fluff and make it concise (1-2 sentences max).
+        5. Output ONLY the rewritten bullet point. No intro.
+
+        INPUT: "{request.text}"
+        """
+
+    # 2. LINKEDIN MODE (Viral/Professional)
+    elif request.mode == "linkedin":
+        prompt = f"""
+        Act as a LinkedIn Influencer and Personal Branding Expert.
+        TASK: Rewrite the user's update into an engaging LinkedIn post for a '{request.role}'.
+        
+        RULES:
+        1. Start with a "Hook" (a catchy first line to stop the scroll).
+        2. Use short paragraphs and plenty of white space.
+        3. Maintain a professional yet authentic tone.
+        4. Include 3-5 relevant hashtags at the bottom.
+        5. Use appropriate emojis to make it visually appealing.
+
+        INPUT: "{request.text}"
+        """
+
+    # 3. PORTFOLIO MODE (Case Study)
+    elif request.mode == "portfolio":
+        prompt = f"""
+        Act as a Technical Writer and Portfolio Coach.
+        TASK: Convert the user's rough notes into a structured Case Study for a '{request.role}' portfolio.
+        
+        RULES:
+        1. Organize the output into three distinct sections: 
+           - 🛑 PROBLEM: (What was the challenge?)
+           - 💡 SOLUTION: (What technologies/strategies did you use?)
+           - 🚀 IMPACT: (What was the outcome/benefit?)
+        2. Keep it professional, technical, and concise.
+        3. Focus on the "Why" and "How".
+
+        INPUT: "{request.text}"
+        """
+
+    # 4. DEFAULT/COVER LETTER
+    else:
+        prompt = f"""
+        Act as a Professional Career Coach.
+        TASK: Rewrite the following text to be more professional, persuasive, and clear for a '{request.role}'.
+        Keep the original meaning but elevate the vocabulary and tone.
+        
+        INPUT: "{request.text}"
+        """
 
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        
-        # Select prompt based on mode
-        if request.mode == "resume":
-            prompt = f"""
-            Act as a Senior Resume Writer. Rewrite the following bullet point for a {request.role}.
-            Rules:
-            - Use strong action verbs (Spearheaded, Engineered, Optimized).
-            - Include specific metrics/numbers if possible (or placeholders like [X]%).
-            - Remove fluff and buzzwords.
-            - Keep it under 2 lines.
-            - Output ONLY the rewritten bullet point.
-            
-            Input: {request.text}
-            """
-        elif request.mode == "linkedin":
-            prompt = f"""
-            Act as a LinkedIn Influencer. Rewrite this thought into a viral post for a {request.role}.
-            Rules:
-            - Use a hook in the first line.
-            - Add spacing for readability.
-            - Use 3-5 relevant hashtags.
-            - Keep the tone professional but engaging.
-            
-            Input: {request.text}
-            """
-        else: # Portfolio / General
-            prompt = f"""
-            Act as a Technical Writer. Rewrite this project description for a {request.role} portfolio.
-            Rules:
-            - Use the STAR method (Situation, Task, Action, Result).
-            - Highlight technical challenges and solutions.
-            - Keep it professional and concise.
-            
-            Input: {request.text}
-            """
-
-        # Set max tokens based on mode
-        max_tokens = 150 if request.mode == "resume" else 400
-
-        # Generate content
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                max_output_tokens=max_tokens,
-                temperature=0.7
-            )
-        )
-        
-        return {"optimized": response.text.strip()}
-
+        response = active_model.generate_content(prompt)
+        return {"optimized": response.text}
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"❌ Generation Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# 6. Run the Server
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
