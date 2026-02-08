@@ -1,92 +1,94 @@
-import google.generativeai as genai
-from fastapi import FastAPI
+import os
+import uvicorn
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
+import google.generativeai as genai
 
-# --- CONFIGURATION ---
-# ⚠️ PASTE YOUR API KEY HERE
-API_KEY = "AIzaSyB01fXdhW3Fwc_zKsVA_LzghWI5CeTcjuw"
+# 1. Setup API Key
+API_KEY = os.getenv("GEMINI_API_KEY")
+if not API_KEY:
+    raise ValueError("⚠️ GEMINI_API_KEY is missing! Add it to Render Environment Variables.")
 
 genai.configure(api_key=API_KEY)
-# Using the alias that works for your account
-model = genai.GenerativeModel('gemini-flash-latest')
 
+# 2. Setup the App
 app = FastAPI()
 
-# --- CORS SETUP ---
+# 3. Allow Frontend to talk to Backend (CORS)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Allows all connections
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- DATA MODELS ---
-class OptimizeRequest(BaseModel):
+# 4. Define the Data Model
+class OptimizationRequest(BaseModel):
     text: str
-    target_role: str  # e.g. "Nurse", "Python Dev", "Sales Manager"
-    mode: str         # "resume", "linkedin", "portfolio"
+    mode: str
+    role: str
 
-# --- ENDPOINT ---
+# 5. The Logic
 @app.post("/optimize")
-async def optimize_text(request: OptimizeRequest):
+async def optimize_text(request: OptimizationRequest):
     try:
-        # DYNAMIC & AGGRESSIVE PROMPTS
-        role = request.target_role if request.target_role else "Professional"
+        model = genai.GenerativeModel("gemini-1.5-flash")
         
-        prompts = {
-            "resume": f"""
-            ACT AS: A Ruthless Senior Recruiter & ATS Algorithm Expert for {role} roles.
-            TASK: Rewrite the user's raw input into a single, high-impact "Bullet-Proof" resume point.
-            MODE: AGGRESSIVE & METRIC-FOCUSED.
-
-            RULES:
-            1. START immediately with a Power Verb (e.g., Engineered, Spearheaded, Slashed, Revitalized).
-            2. DESTROY passive language (Never use: "responsible for", "helped", "tried").
-            3. FORCE METRICS: If the user provides numbers, emphasize them. If not, structure the sentence to highlight efficiency/impact.
-            4. KEYWORDS: Inject ATS keywords relevant to {role}.
-            5. FORMAT: Return ONLY the optimized bullet point text. No intro. No quotes.
-            """,
+        # Select prompt based on mode
+        if request.mode == "resume":
+            prompt = f"""
+            Act as a Senior Resume Writer. Rewrite the following bullet point for a {request.role}.
+            Rules:
+            - Use strong action verbs (Spearheaded, Engineered, Optimized).
+            - Include specific metrics/numbers if possible (or placeholders like [X]%).
+            - Remove fluff and buzzwords.
+            - Keep it under 2 lines.
+            - Output ONLY the rewritten bullet point.
             
-            "linkedin": f"""
-            ACT AS: A Viral Content Strategist for {role} professionals.
-            TASK: Rewrite the input into a professional, engaging LinkedIn post.
-            
-            STRUCTURE:
-            1. The Hook (Grab attention immediately).
-            2. The Insight (The core professional lesson or story).
-            3. The Call to Action (Question or takeaway).
-            4. Hashtags (3-5 relevant tags).
-            """,
-            
-            "portfolio": f"""
-            ACT AS: A Portfolio Curator for a {role}.
-            TASK: Structure the input into a professional 'Case Study' entry.
-            
-            STRUCTURE:
-            1. Challenge: (The specific problem you faced).
-            2. Action: (The tools, skills, or strategies used).
-            3. Result: (The outcome - Revenue, Speed, Safety, etc.).
+            Input: {request.text}
             """
-        }
-        
-        system_instruction = prompts.get(request.mode, "Make this professional.")
-        final_prompt = f"{system_instruction}\n\nUSER INPUT: {request.text}"
-        
-       max_tokens = 150 if request.mode == "resume" else 400
+        elif request.mode == "linkedin":
+            prompt = f"""
+            Act as a LinkedIn Influencer. Rewrite this thought into a viral post for a {request.role}.
+            Rules:
+            - Use a hook in the first line.
+            - Add spacing for readability.
+            - Use 3-5 relevant hashtags.
+            - Keep the tone professional but engaging.
+            
+            Input: {request.text}
+            """
+        else: # Portfolio / General
+            prompt = f"""
+            Act as a Technical Writer. Rewrite this project description for a {request.role} portfolio.
+            Rules:
+            - Use the STAR method (Situation, Task, Action, Result).
+            - Highlight technical challenges and solutions.
+            - Keep it professional and concise.
+            
+            Input: {request.text}
+            """
 
-response = model.generate_content(
-    final_prompt,
-    generation_config=genai.types.GenerationConfig(
-        max_output_tokens=max_tokens, # <--- STOPS IT FROM RAMBLING
-        temperature=0.7 # <--- KEEPS IT FOCUSED
-    )
-)
-        return {"optimized": response.text}
+        # Correct Indentation for the Speed Fix
+        max_tokens = 150 if request.mode == "resume" else 400
+
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=max_tokens,
+                temperature=0.7
+            )
+        )
+        
+        return {"optimized": response.text.strip()}
+
     except Exception as e:
-        return {"optimized": f"Error: {str(e)}"}
+        print(f"Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
+# 6. Run the Server
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
